@@ -18,6 +18,7 @@ const MAX_VOUCHERS_PER_LOAN: u32 = 100;
 pub enum ContractError {
     InsufficientFunds = 1,
     DuplicateVouch = 2,
+    NoActiveLoan = 3,
 }
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -159,14 +160,14 @@ impl QuorumCreditContract {
     }
 
     /// Borrower repays loan; vouchers receive 2% yield on their stake.
-    pub fn repay(env: Env, borrower: Address) {
+    pub fn repay(env: Env, borrower: Address) -> Result<(), ContractError> {
         borrower.require_auth();
 
         let mut loan: LoanRecord = env
             .storage()
             .persistent()
             .get(&DataKey::Loan(borrower.clone()))
-            .expect("no active loan");
+            .ok_or(ContractError::NoActiveLoan)?;
 
         assert!(!loan.defaulted, "loan already defaulted");
         assert!(!loan.repaid, "loan already repaid");
@@ -195,6 +196,8 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .set(&DataKey::Loan(borrower), &loan);
+        
+        Ok(())
     }
 
     /// Admin marks a loan defaulted; 50% of each voucher's stake is slashed.
@@ -428,6 +431,9 @@ mod tests {
         
         // This should panic due to zero amount
         client.request_loan(&borrower, &0, &1_000_000);
+    }
+
+    #[test]
     fn test_repay_with_max_vouchers() {
         let env = Env::default();
         env.budget().reset_unlimited();
@@ -457,5 +463,20 @@ mod tests {
         // Check loan is repaid
         let loan = client.get_loan(&borrower).unwrap();
         assert!(loan.repaid);
+    }
+
+    #[test]
+    fn test_repay_nonexistent_loan_should_fail() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // Try to repay a loan that doesn't exist
+        let result = client.try_repay(&borrower);
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::NoActiveLoan)),
+            "expected NoActiveLoan error when repaying non-existent loan"
+        );
     }
 }
