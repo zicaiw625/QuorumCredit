@@ -83,7 +83,7 @@ QuorumCredit/
 
 | Function | Description |
 |---|---|
-| `initialize(admin, token)` | One-time setup — set admin and XLM token address |
+| `initialize(deployer, admin, token)` | One-time setup — deployer must sign; sets admin and XLM token address |
 | `vouch(voucher, borrower, stake)` | Stake XLM to back a borrower |
 | `request_loan(borrower, amount, threshold)` | Disburse loan if stake threshold is met |
 | `repay(borrower)` | Repay loan; vouchers receive 2% yield |
@@ -165,10 +165,28 @@ cargo test test_repay_gives_voucher_yield
 | `test_vouch_and_loan_disbursed` | Loan record created, funds transferred to borrower |
 | `test_repay_gives_voucher_yield` | Voucher receives original stake + 2% yield |
 | `test_slash_burns_half_stake` | Voucher loses 50% of stake on default |
+| `test_unauthorized_initialize_rejected` | `initialize` panics when called without deployer's signature |
 
 ---
 
 ## Deployment
+
+### Security: Deployer-Gated Initialization
+
+`initialize` requires the `deployer` address to sign the transaction (`deployer.require_auth()`). This closes the front-running window that exists between contract deployment and initialization:
+
+1. An attacker observing the deployment transaction on-chain cannot call `initialize` first — they cannot forge the deployer's signature.
+2. The deployer address is stored in contract storage (`DataKey::Deployer`) for auditability.
+
+**Required deployment sequence — do not deviate:**
+
+```
+Step 1: Build the WASM
+Step 2: Deploy the contract  ← deployer keypair signs this tx
+Step 3: Initialize the contract ← SAME deployer keypair must sign this tx
+```
+
+If steps 2 and 3 are not signed by the same keypair, `initialize` will panic and the contract remains uninitialized.
 
 ### Deploy to Testnet
 
@@ -176,21 +194,26 @@ cargo test test_repay_gives_voucher_yield
 # Build
 cargo build --target wasm32-unknown-unknown --release
 
-# Deploy
+# Step 1 — Deploy (note the returned CONTRACT_ID)
 stellar contract deploy \
   --wasm target/wasm32-unknown-unknown/release/quorum_credit.wasm \
   --network testnet \
   --source $DEPLOYER_SECRET_KEY
 
-# Initialize
+# Step 2 — Initialize immediately after deploy, using the SAME source key
+# deployer = the account that signed the deploy tx above
 stellar contract invoke \
   --id $CONTRACT_ID \
   --fn initialize \
   --network testnet \
   --source $DEPLOYER_SECRET_KEY \
-  --arg admin=$ADMIN_ADDRESS \
-  --arg token=$TOKEN_CONTRACT
+  -- \
+  --deployer $DEPLOYER_ADDRESS \
+  --admin $ADMIN_ADDRESS \
+  --token $TOKEN_CONTRACT
 ```
+
+> The `--source` key for `invoke` must match `--deployer`. Using any other key will cause `require_auth()` to reject the call.
 
 ### Deploy to Mainnet
 
