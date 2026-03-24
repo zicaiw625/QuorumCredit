@@ -27,6 +27,17 @@ pub enum ContractError {
     LoanPastDeadline = 5,
 }
 
+// ── Loan Status ───────────────────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LoanStatus {
+    None,
+    Active,
+    Repaid,
+    Defaulted,
+}
+
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -578,6 +589,17 @@ impl QuorumCreditContract {
 
     // ── Views ─────────────────────────────────────────────────────────────────
 
+    pub fn is_initialized(env: Env) -> bool {
+        env.storage().instance().has(&DataKey::Admin)
+    }
+
+    pub fn get_token(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("not initialized")
+    }
+
     pub fn get_admin(env: Env) -> Address {
         env.storage()
             .instance()
@@ -599,12 +621,42 @@ impl QuorumCreditContract {
             .unwrap_or(false)
     }
 
+    pub fn loan_status(env: Env, borrower: Address) -> LoanStatus {
+        match env.storage().persistent().get::<DataKey, LoanRecord>(&DataKey::Loan(borrower)) {
+            None => LoanStatus::None,
+            Some(loan) if loan.repaid => LoanStatus::Repaid,
+            Some(loan) if loan.defaulted => LoanStatus::Defaulted,
+            _ => LoanStatus::Active,
+        }
+    }
+
+    pub fn vouch_exists(env: Env, voucher: Address, borrower: Address) -> bool {
+        let vouches: Vec<VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Vouches(borrower))
+            .unwrap_or(Vec::new(&env));
+        vouches.iter().any(|v| v.voucher == voucher)
+    }
+
     pub fn get_loan(env: Env, borrower: Address) -> Option<LoanRecord> {
         env.storage().persistent().get(&DataKey::Loan(borrower))
     }
 
     pub fn get_vouches(env: Env, borrower: Address) -> Option<Vec<VouchRecord>> {
         env.storage().persistent().get(&DataKey::Vouches(borrower))
+    }
+
+    /// Returns the total staked amount across all vouchers for a given borrower.
+    /// Returns 0 if the borrower has no vouches.
+    pub fn total_vouched(env: Env, borrower: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get::<DataKey, Vec<VouchRecord>>(&DataKey::Vouches(borrower))
+            .unwrap_or(Vec::new(&env))
+            .iter()
+            .map(|v| v.stake)
+            .sum()
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -666,6 +718,8 @@ mod tests {
             &token_id.address(),
             &150,
         );
+        QuorumCreditContractClient::new(env, &contract_id)
+            .initialize(&admin, &admin, &token_id.address(), &150);
 
         (contract_id, token_id.address(), admin, borrower, voucher)
     }
@@ -762,6 +816,8 @@ mod tests {
             &token_id.address(),
             &150,
         );
+        QuorumCreditContractClient::new(&env, &contract_id)
+            .initialize(&admin, &admin, &token_id.address(), &150);
 
         let client = QuorumCreditContractClient::new(&env, &contract_id);
         // Stake 1_000_000 — contract now holds exactly 1_000_000.
@@ -951,6 +1007,27 @@ mod tests {
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
         assert!(client.get_vouches(&borrower).is_none());
+    }
+
+    #[test]
+    fn test_total_vouched_returns_sum_of_all_stakes() {
+        let env = Env::default();
+        let (contract_id, token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let token_admin = StellarAssetClient::new(&env, &token_addr);
+
+        // No vouches yet — should return 0.
+        assert_eq!(client.total_vouched(&borrower), 0);
+
+        // First voucher stakes 1_000_000.
+        client.vouch(&voucher, &borrower, &1_000_000);
+        assert_eq!(client.total_vouched(&borrower), 1_000_000);
+
+        // Second voucher stakes 2_500_000.
+        let voucher2 = Address::generate(&env);
+        token_admin.mint(&voucher2, &10_000_000);
+        client.vouch(&voucher2, &borrower, &2_500_000);
+        assert_eq!(client.total_vouched(&borrower), 3_500_000);
     }
 
     #[test]
@@ -1157,5 +1234,81 @@ mod tests {
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
         assert_eq!(client.get_admin(), admin);
+    }
+
+    #[test]
+    fn test_vouch_exists() {
+        let env = Env::default();
+        let (contract_id, _, _, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        assert!(!client.vouch_exists(&voucher, &borrower));
+        client.vouch(&voucher, &borrower, &1_000_000);
+        assert!(client.vouch_exists(&voucher, &borrower));
+    }
+
+    #[test]
+    fn test_loan_status_none() {
+        let env = Env::default();
+        let (contract_id, _, _, borrower, _) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        assert_eq!(client.loan_status(&borrower), LoanStatus::None);
+    }
+
+    #[test]
+    fn test_loan_status_active() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (contract_id, _, _, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        assert_eq!(client.loan_status(&borrower), LoanStatus::Active);
+    }
+
+    #[test]
+    fn test_loan_status_repaid() {
+        let env = Env::default();
+        let (contract_id, _, _, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        client.repay(&borrower);
+        assert_eq!(client.loan_status(&borrower), LoanStatus::Repaid);
+    }
+
+    #[test]
+    fn test_loan_status_defaulted() {
+        let env = Env::default();
+        let (contract_id, _, _, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        client.slash(&borrower);
+        assert_eq!(client.loan_status(&borrower), LoanStatus::Defaulted);
+    }
+
+    #[test]
+    fn test_is_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        assert!(!client.is_initialized());
+        client.initialize(&admin, &admin, &token_id.address(), &150);
+        assert!(client.is_initialized());
+    }
+
+    #[test]
+    fn test_get_token_returns_token_address() {
+        let env = Env::default();
+        let (contract_id, token_addr, _admin, _borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        assert_eq!(client.get_token(), token_addr);
     }
 }
