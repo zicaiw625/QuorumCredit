@@ -516,6 +516,13 @@ impl QuorumCreditContract {
 
     // ── Views ─────────────────────────────────────────────────────────────────
 
+    pub fn get_admin(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized")
+    }
+
     pub fn get_slash_treasury(env: Env) -> i128 {
         env.storage()
             .instance()
@@ -1009,5 +1016,14 @@ mod tests {
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
         assert_eq!(client.get_loan_duration(), LOAN_EXPIRY_SECONDS);
+    }
+
+    #[test]
+    fn test_get_admin_returns_admin_address() {
+        let env = Env::default();
+        let (contract_id, _token_addr, admin, _borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        assert_eq!(client.get_admin(), admin);
     }
 }
