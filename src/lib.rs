@@ -27,6 +27,17 @@ pub enum ContractError {
     LoanPastDeadline = 5,
 }
 
+// ── Loan Status ───────────────────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LoanStatus {
+    None,
+    Active,
+    Repaid,
+    Defaulted,
+}
+
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -562,6 +573,15 @@ impl QuorumCreditContract {
             .unwrap_or(false)
     }
 
+    pub fn loan_status(env: Env, borrower: Address) -> LoanStatus {
+        match env.storage().persistent().get::<DataKey, LoanRecord>(&DataKey::Loan(borrower)) {
+            None => LoanStatus::None,
+            Some(loan) if loan.repaid => LoanStatus::Repaid,
+            Some(loan) if loan.defaulted => LoanStatus::Defaulted,
+            _ => LoanStatus::Active,
+        }
+    }
+
     pub fn get_loan(env: Env, borrower: Address) -> Option<LoanRecord> {
         env.storage().persistent().get(&DataKey::Loan(borrower))
     }
@@ -1066,6 +1086,47 @@ mod tests {
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
         assert_eq!(client.get_admin(), admin);
+    }
+
+    #[test]
+    fn test_loan_status_none() {
+        let env = Env::default();
+        let (contract_id, _, _, borrower, _) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        assert_eq!(client.loan_status(&borrower), LoanStatus::None);
+    }
+
+    #[test]
+    fn test_loan_status_active() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (contract_id, _, _, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        assert_eq!(client.loan_status(&borrower), LoanStatus::Active);
+    }
+
+    #[test]
+    fn test_loan_status_repaid() {
+        let env = Env::default();
+        let (contract_id, _, _, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        client.repay(&borrower);
+        assert_eq!(client.loan_status(&borrower), LoanStatus::Repaid);
+    }
+
+    #[test]
+    fn test_loan_status_defaulted() {
+        let env = Env::default();
+        let (contract_id, _, _, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        client.slash(&borrower);
+        assert_eq!(client.loan_status(&borrower), LoanStatus::Defaulted);
     }
 
     #[test]
