@@ -4,8 +4,8 @@ use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
 
 #[contracttype]
 pub enum RepKey {
-    Minter,          // Address authorised to mint/burn (the main lending contract)
-    Score(Address),  // borrower → u32 reputation score
+    Minter,         // Address authorised to mint/burn (the main lending contract)
+    Score(Address), // borrower → u32 reputation score
 }
 
 #[contract]
