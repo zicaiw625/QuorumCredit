@@ -29,6 +29,7 @@ const DEFAULT_MAX_VOUCHERS: u32 = 100;
 const DEFAULT_MIN_LOAN_AMOUNT: i128 = 100_000;
 const DEFAULT_LOAN_DURATION: u64 = 30 * 24 * 60 * 60;
 const DEFAULT_MAX_LOAN_TO_STAKE_RATIO: u32 = 150;
+const DEFAULT_VOUCH_COOLDOWN_SECS: u64 = 24 * 60 * 60; // 24 hours
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -48,6 +49,7 @@ pub enum ContractError {
     LoanExceedsMaxAmount = 11,
     InsufficientVouchers = 12,
     UnauthorizedCaller = 13,
+    VouchCooldownActive = 14,
 }
 
 // ── Loan Status ───────────────────────────────────────────────────────────────
@@ -81,6 +83,7 @@ pub enum DataKey {
     PendingAdmin,            // Address of the pending admin (two-step transfer)
     RepaymentCount(Address), // borrower → u32 total successful repayments
     ProtocolFeeBps,          // u32: protocol fee in basis points
+    LastVouchTimestamp(Address), // voucher → u64 last vouch timestamp
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -112,6 +115,8 @@ pub struct Config {
     /// At the default 200 bps yield rate, the minimum is 50 stroops
     /// (50 * 200 / 10_000 = 1 stroop of yield).
     pub min_yield_stake: i128,
+    /// Minimum seconds a voucher must wait between vouch calls (0 = no cooldown).
+    pub vouch_cooldown_secs: u64,
 }
 
 impl Config {
@@ -124,6 +129,7 @@ impl Config {
             loan_duration: DEFAULT_LOAN_DURATION,
             max_loan_to_stake_ratio: DEFAULT_MAX_LOAN_TO_STAKE_RATIO,
             min_yield_stake: DEFAULT_MIN_YIELD_STAKE,
+            vouch_cooldown_secs: DEFAULT_VOUCH_COOLDOWN_SECS,
         }
     }
 }
@@ -245,6 +251,19 @@ impl QuorumCreditContract {
             cfg.min_yield_stake
         );
 
+        // Rate limiting: enforce cooldown between vouch calls from the same address.
+        if cfg.vouch_cooldown_secs > 0 {
+            let now = env.ledger().timestamp();
+            let last: u64 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::LastVouchTimestamp(voucher.clone()))
+                .unwrap_or(0);
+            if now < last + cfg.vouch_cooldown_secs {
+                return Err(ContractError::VouchCooldownActive);
+            }
+        }
+
         let mut vouches: Vec<VouchRecord> = env
             .storage()
             .persistent()
@@ -286,6 +305,11 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .set(&DataKey::Vouches(borrower.clone()), &vouches);
+
+        // Record the timestamp of this vouch for rate limiting.
+        env.storage()
+            .persistent()
+            .set(&DataKey::LastVouchTimestamp(voucher.clone()), &env.ledger().timestamp());
 
         env.events().publish(
             (symbol_short!("vouch"), symbol_short!("added")),
@@ -3204,5 +3228,99 @@ impl QuorumCreditContract {
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
         assert!(client.get_loan_pool(&999u64).is_none());
+    }
+
+    // ── Rate Limiting: vouch cooldown ─────────────────────────────────────────
+
+    #[test]
+    fn test_vouch_cooldown_blocks_second_vouch_within_window() {
+        let (env, contract_id, _admin, token_addr, token_admin) = setup();
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // Set a 1-hour cooldown.
+        let mut cfg = client.get_config();
+        cfg.vouch_cooldown_secs = 3_600;
+        client.set_config(&cfg);
+
+        let voucher = Address::generate(&env);
+        let borrower1 = Address::generate(&env);
+        let borrower2 = Address::generate(&env);
+        mint(&env, &token_admin, &token_addr, &voucher, 2_000_000);
+
+        // First vouch succeeds.
+        client.vouch(&voucher, &borrower1, &1_000_000i128);
+
+        // Immediate second vouch from the same voucher must be rejected.
+        let result = client.try_vouch(&voucher, &borrower2, &1_000_000i128);
+        assert_eq!(result, Err(Ok(ContractError::VouchCooldownActive)));
+    }
+
+    #[test]
+    fn test_vouch_cooldown_allows_vouch_after_window_expires() {
+        let (env, contract_id, _admin, token_addr, token_admin) = setup();
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let mut cfg = client.get_config();
+        cfg.vouch_cooldown_secs = 3_600;
+        client.set_config(&cfg);
+
+        let voucher = Address::generate(&env);
+        let borrower1 = Address::generate(&env);
+        let borrower2 = Address::generate(&env);
+        mint(&env, &token_admin, &token_addr, &voucher, 2_000_000);
+
+        client.vouch(&voucher, &borrower1, &1_000_000i128);
+
+        // Advance ledger time past the cooldown window.
+        env.ledger().with_mut(|l| l.timestamp += 3_601);
+
+        // Vouch after cooldown expires must succeed.
+        client.vouch(&voucher, &borrower2, &1_000_000i128);
+        assert!(client.vouch_exists(&voucher, &borrower2));
+    }
+
+    #[test]
+    fn test_vouch_cooldown_zero_disables_rate_limit() {
+        let (env, contract_id, _admin, token_addr, token_admin) = setup();
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // Disable cooldown entirely.
+        let mut cfg = client.get_config();
+        cfg.vouch_cooldown_secs = 0;
+        client.set_config(&cfg);
+
+        let voucher = Address::generate(&env);
+        let borrower1 = Address::generate(&env);
+        let borrower2 = Address::generate(&env);
+        mint(&env, &token_admin, &token_addr, &voucher, 2_000_000);
+
+        client.vouch(&voucher, &borrower1, &1_000_000i128);
+
+        // Immediate second vouch must succeed when cooldown is disabled.
+        client.vouch(&voucher, &borrower2, &1_000_000i128);
+        assert!(client.vouch_exists(&voucher, &borrower2));
+    }
+
+    #[test]
+    fn test_vouch_cooldown_is_per_voucher_not_global() {
+        let (env, contract_id, _admin, token_addr, token_admin) = setup();
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let mut cfg = client.get_config();
+        cfg.vouch_cooldown_secs = 3_600;
+        client.set_config(&cfg);
+
+        let voucher_a = Address::generate(&env);
+        let voucher_b = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        mint(&env, &token_admin, &token_addr, &voucher_a, 1_000_000);
+        mint(&env, &token_admin, &token_addr, &voucher_b, 1_000_000);
+
+        // voucher_a vouches first.
+        client.vouch(&voucher_a, &borrower, &1_000_000i128);
+
+        // voucher_b has never vouched — must succeed immediately.
+        client.vouch(&voucher_b, &borrower, &1_000_000i128);
+        assert!(client.vouch_exists(&voucher_b, &borrower));
     }
 }
