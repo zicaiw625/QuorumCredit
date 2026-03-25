@@ -1,6 +1,6 @@
 #![allow(unused)]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{contract, contractclient, contractimpl, contracttype, Address, Env};
 
 #[contracttype]
 pub enum RepKey {
@@ -8,9 +8,19 @@ pub enum RepKey {
     Score(Address), // borrower → u32 reputation score
 }
 
+#[contractclient(name = "ReputationNftExternalClient")]
+pub trait ReputationNftContractTrait {
+    fn initialize(env: Env, minter: Address);
+    fn mint(env: Env, to: Address);
+    fn burn(env: Env, from: Address);
+    fn balance(env: Env, addr: Address) -> u32;
+}
+
+#[cfg(test)]
 #[contract]
 pub struct ReputationNftContract;
 
+#[cfg(test)]
 #[contractimpl]
 impl ReputationNftContract {
     /// One-time setup: record the authorised minter (the lending contract).
