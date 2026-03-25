@@ -61,6 +61,11 @@ A borrower becomes eligible once their total vouched stake meets the minimum thr
 | Loan repaid ✅ | Debt cleared, credit history improves | Earn 2% yield on staked XLM |
 | Default ❌ | Flagged, future borrowing restricted | 50% of stake slashed |
 
+> **Minimum stake for yield:** A vouch must be at least **50 stroops** to earn non-zero yield.
+> At the default 2% rate (200 bps), `stake * 200 / 10_000` truncates to zero for any stake
+> under 50 stroops. The contract enforces this minimum in `vouch()` and rejects smaller stakes
+> with a clear error rather than silently paying no yield.
+
 ### The FBA Inspiration
 
 Stellar nodes select their own **Quorum Slice** — a trusted subset of peers. QuorumCredit mirrors this: each borrower's eligibility is determined by their personal trust graph, not a central credit bureau. You aren't trusting a bank; you're trusting a specific slice of your social network.

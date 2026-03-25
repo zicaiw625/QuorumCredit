@@ -12,6 +12,11 @@ use reputation::ReputationNftContractClient;
 
 const DEFAULT_YIELD_BPS: i128 = 200;
 const DEFAULT_SLASH_BPS: i128 = 5000;
+/// Minimum stake (in stroops) required for a vouch to earn non-zero yield.
+/// At 200 bps (2%), a stake must be at least 50 stroops so that
+/// `stake * 200 / 10_000 >= 1`. Stakes below this threshold would silently
+/// truncate to zero yield due to integer division.
+const DEFAULT_MIN_YIELD_STAKE: i128 = 50;
 const _: () = assert!(
     DEFAULT_SLASH_BPS <= 10_000,
     "DEFAULT_SLASH_BPS must not exceed 10_000"
@@ -126,6 +131,11 @@ pub struct Config {
     pub loan_duration: u64,
     /// Maximum loan amount as a percentage of total stake (default 150 = 150%).
     pub max_loan_to_stake_ratio: u32,
+    /// Minimum stake in stroops required for a vouch to earn non-zero yield.
+    /// Vouches below this threshold are rejected to prevent silent yield truncation.
+    /// At the default 200 bps yield rate, the minimum is 50 stroops
+    /// (50 * 200 / 10_000 = 1 stroop of yield).
+    pub min_yield_stake: i128,
 }
 
 impl Config {
@@ -137,6 +147,7 @@ impl Config {
             min_loan_amount: DEFAULT_MIN_LOAN_AMOUNT,
             loan_duration: DEFAULT_LOAN_DURATION,
             max_loan_to_stake_ratio: DEFAULT_MAX_LOAN_TO_STAKE_RATIO,
+            min_yield_stake: DEFAULT_MIN_YIELD_STAKE,
         }
     }
 }
@@ -261,6 +272,16 @@ impl QuorumCreditContract {
         if stake < min_stake {
             return Err(ContractError::MinStakeNotMet);
         }
+
+        // Enforce minimum yield stake: reject stakes that would produce zero yield
+        // due to integer division truncation (stake * yield_bps / 10_000 == 0).
+        let cfg = Self::config(&env);
+        assert!(
+            stake >= cfg.min_yield_stake,
+            "stake too small: would produce zero yield due to integer truncation; \
+             minimum stake is {} stroops",
+            cfg.min_yield_stake
+        );
 
         let mut vouches: Vec<VouchRecord> = env
             .storage()
@@ -1625,6 +1646,45 @@ mod tests {
         // Voucher gets back stake (1_000_000) + yield (10_000) = 1_010_000
         // Net balance: 10_000_000 - 1_000_000 (staked) + 1_010_000 = 10_010_000
         assert_eq!(token.balance(&voucher), 10_010_000);
+    }
+
+    /// Issue 7: vouch with a stake below min_yield_stake (50 stroops) must be
+    /// rejected so that vouchers never silently receive zero yield.
+    #[test]
+    #[should_panic(expected = "stake too small: would produce zero yield due to integer truncation")]
+    fn test_vouch_small_stake_below_min_yield_stake_rejected() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // 49 stroops * 200 / 10_000 = 0 — would silently earn no yield.
+        client.vouch(&voucher, &borrower, &49);
+    }
+
+    /// Issue 7: vouch at exactly the minimum yield stake (50 stroops) must succeed
+    /// and produce at least 1 stroop of yield on repayment.
+    #[test]
+    fn test_vouch_at_min_yield_stake_earns_nonzero_yield() {
+        let env = Env::default();
+        let (contract_id, token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let token = TokenClient::new(&env, &token_addr);
+
+        // 50 stroops * 200 / 10_000 = 1 stroop of yield — the minimum non-zero result.
+        client.vouch(&voucher, &borrower, &50);
+        // Loan amount must meet min_loan_amount (100_000); threshold = 50.
+        client.request_loan(&borrower, &100_000, &50);
+        client.repay(&borrower, &100_000);
+
+        // Voucher should receive stake (50) + at least 1 stroop of yield.
+        let initial_balance: i128 = 10_000_000;
+        let final_balance = token.balance(&voucher);
+        // Net: initial - stake + (stake + yield) = initial + yield >= initial + 1
+        assert!(
+            final_balance > initial_balance,
+            "voucher yield was zero for min_yield_stake; got balance {}",
+            final_balance
+        );
     }
 
     #[test]
