@@ -755,27 +755,34 @@ impl QuorumCreditContract {
     }
 
     /// Withdraw a vouch before any loan is active, returning the exact stake to the voucher.
-    pub fn withdraw_vouch(env: Env, voucher: Address, borrower: Address) {
+    ///
+    /// Fails with `ContractError::PoolBorrowerActiveLoan` if the borrower currently
+    /// has an active (non-repaid, non-defaulted) loan. Repaid or defaulted loan
+    /// records in storage do not block withdrawal.
+    pub fn withdraw_vouch(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+    ) -> Result<(), ContractError> {
         voucher.require_auth();
+        Self::require_not_paused(&env)?;
 
-        assert!(
-            env.storage()
-                .persistent()
-                .get::<DataKey, LoanRecord>(&DataKey::Loan(borrower.clone()))
-                .is_none(),
-            "loan already active"
-        );
+        // Block only while a loan is genuinely active; repaid/defaulted records
+        // in storage must not permanently lock voucher funds (fixes issue #14).
+        if Self::has_active_loan(&env, &borrower) {
+            return Err(ContractError::PoolBorrowerActiveLoan);
+        }
 
         let mut vouches: Vec<VouchRecord> = env
             .storage()
             .persistent()
             .get(&DataKey::Vouches(borrower.clone()))
-            .expect("vouch not found");
+            .ok_or(ContractError::NoActiveLoan)?; // reuse: "no vouch found"
 
         let idx = vouches
             .iter()
             .position(|v| v.voucher == voucher)
-            .expect("vouch not found") as u32;
+            .ok_or(ContractError::UnauthorizedCaller)? as u32;
 
         let stake = vouches.get(idx).unwrap().stake;
         vouches.remove(idx);
@@ -783,14 +790,21 @@ impl QuorumCreditContract {
         if vouches.is_empty() {
             env.storage()
                 .persistent()
-                .remove(&DataKey::Vouches(borrower));
+                .remove(&DataKey::Vouches(borrower.clone()));
         } else {
             env.storage()
                 .persistent()
-                .set(&DataKey::Vouches(borrower), &vouches);
+                .set(&DataKey::Vouches(borrower.clone()), &vouches);
         }
 
         Self::token(&env).transfer(&env.current_contract_address(), &voucher, &stake);
+
+        env.events().publish(
+            (symbol_short!("vouch"), symbol_short!("withdrawn")),
+            (voucher, borrower, stake),
+        );
+
+        Ok(())
     }
 
     // ── Loan Deadline ─────────────────────────────────────────────────────────
