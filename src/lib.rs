@@ -3477,6 +3477,32 @@ mod tests {
         assert!(client.get_loan_pool(&999u64).is_none());
     }
 
+    // ── Upgrade Tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "insufficient admin approvals")]
+    fn test_upgrade_rejected_without_admin_approval() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, _borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let outsider = Address::generate(&env);
+        let fake_hash = BytesN::from_array(&env, &[0u8; 32]);
+        client.upgrade(&single_admin_signers(&env, &outsider), &fake_hash);
+    }
+
+    #[test]
+    #[should_panic(expected = "insufficient admin approvals")]
+    fn test_upgrade_multisig_rejects_single_signer() {
+        let env = Env::default();
+        let (contract_id, _token_addr, admin_one, _admin_two, _admin_three, _borrower, _voucher) =
+            setup_multisig(&env, 2);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let fake_hash = BytesN::from_array(&env, &[0u8; 32]);
+        client.upgrade(&single_admin_signers(&env, &admin_one), &fake_hash);
+    }
+
     // ── Rate Limiting: vouch cooldown ─────────────────────────────────────────
 
     #[test]
