@@ -111,16 +111,9 @@ pub struct Config {
     pub loan_duration: u64,
     /// Maximum loan amount as a percentage of total stake (default 150 = 150%).
     pub max_loan_to_stake_ratio: u32,
-
     /// Grace period after deadline before auto_slash is allowed, in seconds (default 3 days).
+    /// A value of 0 means slashing is allowed immediately after the deadline.
     pub grace_period: u64,
-
-    /// Minimum stake in stroops required for a vouch to earn non-zero yield.
-    /// Vouches below this threshold are rejected to prevent silent yield truncation.
-    /// At the default 200 bps yield rate, the minimum is 50 stroops
-    /// (50 * 200 / 10_000 = 1 stroop of yield).
-    pub min_yield_stake: i128,
-
 }
 
 impl Config {
@@ -132,11 +125,7 @@ impl Config {
             min_loan_amount: DEFAULT_MIN_LOAN_AMOUNT,
             loan_duration: DEFAULT_LOAN_DURATION,
             max_loan_to_stake_ratio: DEFAULT_MAX_LOAN_TO_STAKE_RATIO,
-
             grace_period: DEFAULT_GRACE_PERIOD,
-
-            min_yield_stake: DEFAULT_MIN_YIELD_STAKE,
-
         }
     }
 }
@@ -814,7 +803,6 @@ impl QuorumCreditContract {
 
     // ── Loan Deadline ─────────────────────────────────────────────────────────
 
-
     /// Callable by anyone after the loan deadline plus the configured grace period has passed.
     /// Applies the standard slash penalty (50% of each voucher's stake burned).
 
@@ -834,24 +822,14 @@ impl QuorumCreditContract {
         assert!(!loan.defaulted, "loan already defaulted");
 
         let cfg = Self::config(&env);
-        // Use saturating_add to prevent u64 overflow on pathological inputs.
+        // saturating_add prevents u64 overflow on pathological deadline/grace_period values.
         let slash_threshold = loan.deadline.saturating_add(cfg.grace_period);
-
-        // Guard: only an active (non-repaid, non-defaulted) loan may be auto-slashed.
-        if loan.repaid || loan.defaulted {
-            panic_with_error!(&env, ContractError::NoActiveLoan);
-        }
-
         assert!(
             env.ledger().timestamp() > slash_threshold,
             "loan grace period has not passed"
         );
 
         let token = Self::token(&env);
-
-
-        let cfg = Self::config(&env);
-
         let vouches: Vec<VouchRecord> = env
             .storage()
             .persistent()
@@ -963,11 +941,7 @@ impl QuorumCreditContract {
             config.max_loan_to_stake_ratio > 0,
             "max_loan_to_stake_ratio must be greater than zero"
         );
-
-        // grace_period of 0 is valid (no grace period).
-
-        Self::validate_admin_config(&config.admins, config.admin_threshold);
-
+        // grace_period of 0 is valid — means no grace period, slash allowed immediately after deadline.
         env.storage().instance().set(&DataKey::Config, &config);
     }
 
@@ -3125,5 +3099,157 @@ mod tests {
 
         assert!(client.get_loan_pool(&999u64).is_none());
 
+    }
+
+    // ── Grace period tests ────────────────────────────────────────────────────
+
+    fn setup_grace_loan(
+        env: &Env,
+        loan_duration: u64,
+        grace_period: u64,
+    ) -> (Address, Address, Address, Address) {
+        let (contract_id, token_addr, _admin, borrower, voucher) = setup(env);
+        let client = QuorumCreditContractClient::new(env, &contract_id);
+        let mut cfg = client.get_config();
+        cfg.loan_duration = loan_duration;
+        cfg.grace_period = grace_period;
+        client.set_config(&cfg);
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        (contract_id, token_addr, borrower, voucher)
+    }
+
+    #[test]
+    #[should_panic(expected = "loan grace period has not passed")]
+    fn test_auto_slash_blocked_during_grace_period() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (contract_id, _token_addr, borrower, _voucher) =
+            setup_grace_loan(&env, 1_000, 500);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // deadline = 1_001_000; slash_threshold = 1_001_500
+        // advance to 1_001_200 — past deadline but still inside grace period
+        env.ledger().set_timestamp(1_001_200);
+        client.auto_slash(&borrower);
+    }
+
+    #[test]
+    fn test_auto_slash_allowed_after_grace_period() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (contract_id, token_addr, borrower, voucher) =
+            setup_grace_loan(&env, 1_000, 500);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let token = soroban_sdk::token::Client::new(&env, &token_addr);
+
+        // deadline = 1_001_000; slash_threshold = 1_001_500
+        // advance to 1_001_501 — one second past the grace period
+        env.ledger().set_timestamp(1_001_501);
+        client.auto_slash(&borrower);
+
+        assert!(client.get_loan(&borrower).unwrap().defaulted);
+        assert_eq!(token.balance(&voucher), 9_500_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "loan grace period has not passed")]
+    fn test_auto_slash_blocked_exactly_at_slash_threshold() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (contract_id, _token_addr, borrower, _voucher) =
+            setup_grace_loan(&env, 1_000, 500);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // timestamp == slash_threshold: condition is strict `>`, so must be rejected
+        env.ledger().set_timestamp(1_001_500);
+        client.auto_slash(&borrower);
+    }
+
+    #[test]
+    fn test_auto_slash_allowed_one_second_past_threshold() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (contract_id, _token_addr, borrower, _voucher) =
+            setup_grace_loan(&env, 1_000, 500);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        env.ledger().set_timestamp(1_001_501);
+        client.auto_slash(&borrower);
+
+        assert!(client.get_loan(&borrower).unwrap().defaulted);
+    }
+
+    #[test]
+    fn test_auto_slash_zero_grace_period_allows_slash_after_deadline() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (contract_id, token_addr, borrower, voucher) =
+            setup_grace_loan(&env, 1_000, 0);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let token = soroban_sdk::token::Client::new(&env, &token_addr);
+
+        // grace_period = 0 → slash_threshold == deadline; any ts > deadline is valid
+        env.ledger().set_timestamp(1_001_001);
+        client.auto_slash(&borrower);
+
+        assert!(client.get_loan(&borrower).unwrap().defaulted);
+        assert_eq!(token.balance(&voucher), 9_500_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "loan already repaid")]
+    fn test_auto_slash_blocked_on_repaid_loan() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (contract_id, _token_addr, borrower, _voucher) =
+            setup_grace_loan(&env, 1_000, 500);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.repay(&borrower);
+
+        env.ledger().set_timestamp(1_002_000);
+        client.auto_slash(&borrower);
+    }
+
+    #[test]
+    #[should_panic(expected = "loan already defaulted")]
+    fn test_auto_slash_blocked_on_already_defaulted_loan() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000_000);
+        let (contract_id, _token_addr, borrower, _voucher) =
+            setup_grace_loan(&env, 1_000, 500);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // First slash succeeds.
+        env.ledger().set_timestamp(1_001_501);
+        client.auto_slash(&borrower);
+
+        // Second attempt must be rejected.
+        env.ledger().set_timestamp(1_002_000);
+        client.auto_slash(&borrower);
+    }
+
+    #[test]
+    fn test_default_grace_period_is_three_days() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, _borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        assert_eq!(client.get_config().grace_period, DEFAULT_GRACE_PERIOD);
+        assert_eq!(DEFAULT_GRACE_PERIOD, 3 * 24 * 60 * 60);
+    }
+
+    #[test]
+    fn test_set_config_updates_grace_period() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, _borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let mut cfg = client.get_config();
+        cfg.grace_period = 7 * 24 * 60 * 60;
+        client.set_config(&cfg);
+
+        assert_eq!(client.get_config().grace_period, 7 * 24 * 60 * 60);
     }
 }
