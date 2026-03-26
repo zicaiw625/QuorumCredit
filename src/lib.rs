@@ -41,33 +41,10 @@ const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ContractError {
     InsufficientFunds = 1,
-    DuplicateVouch = 2,
-    NoActiveLoan = 3,
-    ContractPaused = 4,
-    LoanPastDeadline = 5,
-    PoolLengthMismatch = 6,
-    PoolEmpty = 7,
-    PoolBorrowerActiveLoan = 8,
-    PoolInsufficientFunds = 9,
-    MinStakeNotMet = 10,
-    LoanExceedsMaxAmount = 11,
-    InsufficientVouchers = 12,
-    UnauthorizedCaller = 13,
-    VouchCooldownActive = 14,
-    TimelockNotReady = 15,
-    TimelockExpired = 16,
-    TimelockNotFound = 17,
-}
-
-// ── Loan Status ───────────────────────────────────────────────────────────────
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LoanStatus {
-    None,
-    Active,
-    Repaid,
-    Defaulted,
+    /// Borrower already has an active (non-repaid, non-defaulted) loan.
+    ActiveLoanExists = 2,
+    /// Total vouched stake overflowed i128.
+    StakeOverflow = 3,
 }
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -532,7 +509,12 @@ impl QuorumCreditContract {
             .get(&DataKey::Vouches(borrower.clone()))
             .unwrap_or(Vec::new(&env));
 
-        let total_stake: i128 = vouches.iter().map(|v| v.stake).sum();
+        let mut total_stake: i128 = 0;
+        for v in vouches.iter() {
+            total_stake = total_stake
+                .checked_add(v.stake)
+                .ok_or(ContractError::StakeOverflow)?;
+        }
         assert!(total_stake >= threshold, "insufficient trust stake");
 
         // Enforce minimum voucher count if configured.
@@ -4664,5 +4646,43 @@ mod tests {
         let result = QuorumCreditContractClient::new(&env, &contract_id)
             .try_initialize(&admin, &admins, &2, &token_id.address());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_stake_overflow_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let v1 = Address::generate(&env);
+        let v2 = Address::generate(&env);
+
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        QuorumCreditContractClient::new(&env, &contract_id)
+            .initialize(&admin, &admin, &token_id.address());
+
+        // Directly write two vouches whose stakes overflow i128 when summed,
+        // bypassing token transfer so we can use values > token balance limits.
+        let big_stake = i128::MAX / 2 + 1;
+        let vouches = soroban_sdk::vec![
+            &env,
+            VouchRecord { voucher: v1, stake: big_stake },
+            VouchRecord { voucher: v2, stake: big_stake },
+        ];
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Vouches(borrower.clone()), &vouches);
+        });
+
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let result = client.try_request_loan(&borrower, &1, &1);
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::StakeOverflow)),
+            "expected StakeOverflow on i128 overflow in stake summation"
+        );
     }
 }
