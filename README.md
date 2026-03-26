@@ -250,6 +250,50 @@ stellar contract deploy \
   --source $DEPLOYER_SECRET_KEY
 ```
 
+### Upgrading the Contract
+
+The `upgrade` function allows the admin (or multisig quorum) to replace the contract WASM after deployment. This is the only path to patching a live vulnerability.
+
+**Upgrade process:**
+
+```
+Step 1: Build the new WASM
+Step 2: (Recommended) Pause the contract to halt user activity
+Step 3: Upload the new WASM and obtain its hash
+Step 4: Call upgrade() — requires admin_threshold signatures
+Step 5: Unpause the contract
+```
+
+```bash
+# Step 1 — Build
+cargo build --target wasm32-unknown-unknown --release
+
+# Step 2 — Pause (recommended)
+stellar contract invoke \
+  --id $CONTRACT_ID --fn pause --network testnet --source $ADMIN_SECRET_KEY \
+  -- --admin_signers '["'$ADMIN_ADDRESS'"]'
+
+# Step 3 — Upload new WASM, capture the returned hash
+NEW_WASM_HASH=$(stellar contract install \
+  --wasm target/wasm32-unknown-unknown/release/quorum_credit.wasm \
+  --network testnet \
+  --source $ADMIN_SECRET_KEY)
+
+# Step 4 — Upgrade (admin_threshold admins must sign)
+stellar contract invoke \
+  --id $CONTRACT_ID --fn upgrade --network testnet --source $ADMIN_SECRET_KEY \
+  -- \
+  --admin_signers '["'$ADMIN_ADDRESS'"]' \
+  --new_wasm_hash $NEW_WASM_HASH
+
+# Step 5 — Unpause
+stellar contract invoke \
+  --id $CONTRACT_ID --fn unpause --network testnet --source $ADMIN_SECRET_KEY \
+  -- --admin_signers '["'$ADMIN_ADDRESS'"]'
+```
+
+> ⚠️ The `upgrade` call requires `admin_threshold` distinct admin signatures — the same multisig quorum used for all other admin operations. A single compromised key cannot unilaterally upgrade the contract.
+
 ---
 
 ## Architecture
