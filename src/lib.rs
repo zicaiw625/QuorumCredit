@@ -27,7 +27,7 @@ mod security_fixes_test;
 #[cfg(test)]
 mod bug_condition_test;
 #[cfg(test)]
-mod get_vouches_empty_test;
+mod slash_auth_test;
 
 pub use errors::ContractError;
 pub use types::*;
