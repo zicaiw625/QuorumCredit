@@ -27,7 +27,7 @@ mod security_fixes_test;
 #[cfg(test)]
 mod bug_condition_test;
 #[cfg(test)]
-mod slash_auth_test;
+mod duplicate_loan_test;
 
 pub use errors::ContractError;
 pub use types::*;
