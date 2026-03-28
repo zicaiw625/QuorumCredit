@@ -1,5 +1,7 @@
 use crate::errors::ContractError;
-use crate::helpers::{has_active_loan, require_allowed_token, require_not_paused, require_positive_amount};
+use crate::helpers::{
+    has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
+};
 use crate::types::{DataKey, VouchRecord};
 use soroban_sdk::{symbol_short, Address, Env, Vec};
 
@@ -205,7 +207,9 @@ pub fn decrease_stake(
     if vouches.is_empty() {
         env.storage().persistent().remove(&DataKey::Vouches(borrower));
     } else {
-        env.storage().persistent().set(&DataKey::Vouches(borrower), &vouches);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Vouches(borrower), &vouches);
     }
 
     token_client.transfer(&env.current_contract_address(), &voucher, &amount);
@@ -236,9 +240,13 @@ pub fn withdraw_vouch(env: Env, voucher: Address, borrower: Address) -> Result<(
     vouches.remove(idx);
 
     if vouches.is_empty() {
-        env.storage().persistent().remove(&DataKey::Vouches(borrower.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Vouches(borrower.clone()));
     } else {
-        env.storage().persistent().set(&DataKey::Vouches(borrower.clone()), &vouches);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Vouches(borrower.clone()), &vouches);
     }
 
     let token_client = require_allowed_token(&env, &token_addr)?;

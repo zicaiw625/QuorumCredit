@@ -1,10 +1,12 @@
 use crate::errors::ContractError;
 use crate::helpers::{
-    config, get_active_loan_record, get_slash_balance, has_active_loan, next_loan_id, require_allowed_token,
-    require_not_paused, validate_loan_active,
+    bps_of, config, get_active_loan_record, get_slash_balance, has_active_loan, next_loan_id,
+    require_allowed_token, require_not_paused, validate_loan_active,
 };
 use crate::reputation::ReputationNftExternalClient;
-use crate::types::{DataKey, LoanRecord, LoanStatus, VouchRecord, DEFAULT_REFERRAL_BONUS_BPS, MIN_VOUCH_AGE};
+use crate::types::{
+    DataKey, LoanRecord, LoanStatus, VouchRecord, DEFAULT_REFERRAL_BONUS_BPS, MIN_VOUCH_AGE,
+};
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
 /// Register a referrer for a borrower. Must be called before `request_loan`.
@@ -237,7 +239,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
             .persistent()
             .get(&DataKey::Vouches(borrower.clone()))
             .unwrap_or(Vec::new(&env));
-        
+
         if vouches.is_empty() {
             panic!("no vouchers found for borrower");
         }
@@ -245,8 +247,8 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         // Issue 112: Only distribute yield to vouches in the same token as the loan.
         // Verify that available funds exclude slash balance to prevent fund leakage.
         let loan_token = soroban_sdk::token::Client::new(&env, &loan.token_address);
-        let slash_balance = get_slash_balance(&env);
-        
+        let _slash_balance = get_slash_balance(&env);
+
         let mut total_stake: i128 = 0;
         for v in vouches.iter() {
             if v.token == loan.token_address {
@@ -268,13 +270,13 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
                 0
             };
             total_distributed += voucher_yield;
-            
+
             // Assert that we're not exceeding available yield
             assert!(
                 total_distributed <= available_for_yield,
                 "yield distribution would exceed available funds"
             );
-            
+
             loan_token.transfer(
                 &env.current_contract_address(),
                 &v.voucher,
@@ -297,7 +299,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
                 .get(&DataKey::ReferralBonusBps)
                 .unwrap_or(DEFAULT_REFERRAL_BONUS_BPS);
             let bonus = loan.amount * bonus_bps as i128 / 10_000;
-            
+
             // Issue 112: Ensure bonus doesn't use slash funds
             if bonus > 0 {
                 loan_token.transfer(&env.current_contract_address(), &referrer, &bonus);

@@ -1,6 +1,8 @@
 use crate::errors::ContractError;
-use crate::helpers::{add_slash_balance, config, get_active_loan_record, require_not_paused, validate_loan_active};
-use crate::types::{DataKey, SlashVoteRecord, VouchRecord, TimelockProposal, TimelockAction};
+use crate::helpers::{
+    add_slash_balance, config, get_active_loan_record, require_not_paused, validate_loan_active,
+};
+use crate::types::{DataKey, SlashVoteRecord, TimelockAction, TimelockProposal, VouchRecord};
 use soroban_sdk::{symbol_short, Address, Env, Vec};
 
 /// Default quorum: 50% of total vouched stake must approve.
@@ -192,7 +194,7 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
 }
 
 /// ── Issue 109: Slash Proposal Confirmation Window ──
-/// 
+///
 /// Implements a two-step slash with timelock pattern:
 /// 1. propose_slash: Admin creates a proposal, sets execution time (eta)
 /// 2. execute_slash_proposal: After delay, anyone can execute
@@ -313,10 +315,7 @@ pub fn cancel_slash_proposal(
         .ok_or(ContractError::NoActiveLoan)?;
 
     // Only proposer can cancel
-    assert!(
-        caller == proposal.proposer,
-        "only proposer can cancel"
-    );
+    assert!(caller == proposal.proposer, "only proposer can cancel");
 
     if proposal.executed || proposal.cancelled {
         return Err(ContractError::SlashAlreadyExecuted);
