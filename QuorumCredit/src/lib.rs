@@ -27,6 +27,7 @@ mod referral_test;
 mod request_loan_insufficient_stake_test;
 #[cfg(test)]
 mod vouch_zero_stake_test;
+#[cfg(test)]
 mod security_fixes_test;
 #[cfg(test)]
 mod bug_condition_test;
