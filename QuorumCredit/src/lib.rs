@@ -198,7 +198,7 @@ impl QuorumCreditContract {
         loan::repay(env, borrower, payment)
     }
 
-    // ── Admin ─────────────────────────────────────────────────────────────────
+    // ── Admin Functions (require admin_threshold signatures) ──────────────────
 
     pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
         admin::add_admin(env, admin_signers, new_admin)
