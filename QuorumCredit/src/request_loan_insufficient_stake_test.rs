@@ -39,4 +39,25 @@ mod request_loan_insufficient_stake_tests {
         );
         assert_eq!(result, Err(Ok(ContractError::InsufficientFunds)));
     }
+
+    #[test]
+    #[should_panic]
+    fn test_request_loan_zero_threshold_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 120);
+        let (contract_id, token_id, voucher, borrower) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &100_000, &token_id);
+
+        // threshold = 0 must be rejected
+        client.request_loan(
+            &borrower,
+            &100_000,
+            &0,
+            &String::from_str(&env, "test"),
+            &token_id,
+        );
+    }
 }
