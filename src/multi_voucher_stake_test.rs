@@ -78,7 +78,7 @@ mod multi_voucher_stake_tests {
 
         // Confirm the borrower is eligible at the 500_000 threshold.
         assert!(
-            s.client.is_eligible(&borrower, &500_000),
+            s.client.is_eligible(&borrower, &500_000, &s.token_id),
             "borrower should be eligible when combined stake meets threshold"
         );
 

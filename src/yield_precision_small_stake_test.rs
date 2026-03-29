@@ -77,7 +77,7 @@ mod yield_precision_small_stake_tests {
         assert_eq!(total_vouched, stake, "total_vouched should equal vouch stake");
 
         // Borrower eligible since stake == threshold.
-        assert!(s.client.is_eligible(&borrower, &threshold));
+        assert!(s.client.is_eligible(&borrower, &threshold, &s.token_id));
 
         // Request small loan (succeeds as threshold met).
         s.client.request_loan(

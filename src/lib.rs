@@ -54,6 +54,12 @@ mod repay_nonexistent_loan_test;
 mod slash_multi_voucher_test;
 #[cfg(test)]
 mod voucher_balance_check_test;
+#[cfg(test)]
+mod vouch_cooldown_test;
+#[cfg(test)]
+mod repay_protocol_fee_test;
+#[cfg(test)]
+mod is_eligible_token_filter_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -790,11 +796,12 @@ impl QuorumCreditContract {
     /// # Arguments
     /// * `borrower` - Address of the borrower
     /// * `threshold` - Minimum total stake required
+    /// * `token_addr` - Token address to filter vouches by
     ///
     /// # Returns
     /// * `bool` - True if eligible, false otherwise
-    pub fn is_eligible(env: Env, borrower: Address, threshold: i128) -> bool {
-        loan::is_eligible(env, borrower, threshold)
+    pub fn is_eligible(env: Env, borrower: Address, threshold: i128, token_addr: Address) -> bool {
+        loan::is_eligible(env, borrower, threshold, token_addr)
     }
 
     /// Get the contract's token balance.

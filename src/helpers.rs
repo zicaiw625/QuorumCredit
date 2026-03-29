@@ -186,3 +186,8 @@ pub fn validate_admin_config(
 
     Ok(())
 }
+
+/// Compute basis points: amount * bps / 10_000
+pub fn bps_of(amount: i128, bps: u32) -> i128 {
+    amount * bps as i128 / 10_000
+}

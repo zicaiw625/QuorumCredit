@@ -145,9 +145,12 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
     let loan_token = soroban_sdk::token::Client::new(env, &loan.token_address);
 
     let mut total_slashed: i128 = 0;
+    let mut remaining_vouches: Vec<VouchRecord> = Vec::new(env);
 
     for v in vouches.iter() {
         if v.token != loan.token_address {
+            // Keep non-loan-token vouches
+            remaining_vouches.push_back(v);
             continue;
         }
         let slash_amount = v.stake * cfg.slash_bps / 10_000;
@@ -178,9 +181,16 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
         .persistent()
         .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
 
-    env.storage()
-        .persistent()
-        .remove(&DataKey::Vouches(borrower.clone()));
+    // Only remove vouches if all were processed; otherwise keep remaining vouches
+    if remaining_vouches.is_empty() {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Vouches(borrower.clone()));
+    } else {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Vouches(borrower.clone()), &remaining_vouches);
+    }
 
     env.events().publish(
         (symbol_short!("gov"), symbol_short!("slashed")),

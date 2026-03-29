@@ -238,4 +238,54 @@ mod governance_tests {
             crate::LoanStatus::Defaulted
         );
     }
+
+    /// Issue #365: Mixed-token vouches — non-loan-token stakes are returned to vouchers.
+    #[test]
+    fn test_slash_mixed_token_vouches_returns_non_loan_token() {
+        let s = setup();
+        let borrower = Address::generate(&s.env);
+        let voucher_a = Address::generate(&s.env);
+        let voucher_b = Address::generate(&s.env);
+
+        // Create a second token
+        let token2_id = s.env.register_stellar_asset_contract_v2(s.admin.clone());
+        let token2 = token2_id.address();
+
+        // Fund contract with both tokens
+        StellarAssetClient::new(&s.env, &s.token_id).mint(&s.client.address, &10_000_000);
+        StellarAssetClient::new(&s.env, &token2).mint(&s.client.address, &10_000_000);
+
+        // voucher_a stakes in token1 (loan token)
+        do_vouch(&s, &voucher_a, &borrower, 600_000);
+
+        // voucher_b stakes in token2 (non-loan token)
+        StellarAssetClient::new(&s.env, &token2).mint(&voucher_b, &400_000);
+        s.client.vouch(&voucher_b, &borrower, &400_000, &token2);
+
+        // Request loan in token1
+        do_loan(&s, &borrower, 100_000, 500_000);
+
+        // Slash via vote (voucher_a has 60% of token1 vouches)
+        s.client.vote_slash(&voucher_a, &borrower, &true);
+
+        // Loan must be defaulted
+        assert_eq!(
+            s.client.loan_status(&borrower),
+            crate::LoanStatus::Defaulted
+        );
+
+        // voucher_a's remaining stake (50% of 600_000 = 300_000) should be returned
+        let voucher_a_balance = StellarAssetClient::new(&s.env, &s.token_id).balance(&voucher_a);
+        assert_eq!(voucher_a_balance, 300_000);
+
+        // voucher_b's full stake (400_000) should be returned (non-loan token not slashed)
+        let voucher_b_balance = StellarAssetClient::new(&s.env, &token2).balance(&voucher_b);
+        assert_eq!(voucher_b_balance, 400_000);
+
+        // Verify vouches are still stored (voucher_b's token2 vouch remains)
+        let vouches = s.client.get_vouches(&borrower);
+        assert_eq!(vouches.len(), 1);
+        assert_eq!(vouches.get(0).unwrap().token, token2);
+        assert_eq!(vouches.get(0).unwrap().stake, 400_000);
+    }
 }

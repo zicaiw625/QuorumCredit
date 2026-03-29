@@ -57,6 +57,7 @@ pub enum DataKey {
     ProtocolFeeBps,  // u32: protocol fee in basis points
     FeeTreasury,     // Address: recipient of collected protocol fees
     LastVouchTimestamp(Address), // voucher → u64 last vouch timestamp
+    VouchCooldownSecs,           // u64 cooldown between vouch calls (default 24 hours)
     Timelock(u64),   // proposal_id → TimelockProposal
     TimelockCounter, // u64 monotonically increasing proposal ID
     Blacklisted(Address), // borrower → bool permanently banned

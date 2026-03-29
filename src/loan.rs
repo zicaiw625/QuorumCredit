@@ -231,6 +231,28 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         // Issue 112: Only distribute yield to vouches in the same token as the loan.
         let loan_token = soroban_sdk::token::Client::new(&env, &loan.token_address);
 
+        // Issue #367: Collect protocol fee before distributing yield
+        let protocol_fee_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProtocolFeeBps)
+            .unwrap_or(0);
+        let protocol_fee = crate::helpers::bps_of(loan.amount, protocol_fee_bps);
+        
+        if protocol_fee > 0 {
+            if let Some(fee_treasury) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Address>(&DataKey::FeeTreasury)
+            {
+                loan_token.transfer(
+                    &env.current_contract_address(),
+                    &fee_treasury,
+                    &protocol_fee,
+                );
+            }
+        }
+
         let mut total_stake: i128 = 0;
         for v in vouches.iter() {
             if v.token == loan.token_address {
@@ -344,7 +366,7 @@ pub fn get_loan_by_id(env: Env, loan_id: u64) -> Option<LoanRecord> {
     env.storage().persistent().get(&DataKey::Loan(loan_id))
 }
 
-pub fn is_eligible(env: Env, borrower: Address, threshold: i128) -> bool {
+pub fn is_eligible(env: Env, borrower: Address, threshold: i128, token_addr: Address) -> bool {
     if threshold <= 0 {
         return false;
     }
@@ -361,7 +383,11 @@ pub fn is_eligible(env: Env, borrower: Address, threshold: i128) -> bool {
         .get(&DataKey::Vouches(borrower))
         .unwrap_or(Vec::new(&env));
 
-    let total_stake: i128 = vouches.iter().map(|v| v.stake).sum();
+    let total_stake: i128 = vouches
+        .iter()
+        .filter(|v| v.token == token_addr)
+        .map(|v| v.stake)
+        .sum();
     total_stake >= threshold
 }
 

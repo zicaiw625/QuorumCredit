@@ -54,7 +54,23 @@ fn do_vouch(
     }
 
     // Rate limiting: enforce cooldown between vouch calls from the same address.
-    // (Timestamp recorded at end of function for future cooldown enforcement.)
+    let vouch_cooldown_secs: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::VouchCooldownSecs)
+        .unwrap_or(crate::types::DEFAULT_VOUCH_COOLDOWN_SECS);
+
+    if vouch_cooldown_secs > 0 {
+        let last_vouch_time: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LastVouchTimestamp(voucher.clone()))
+            .unwrap_or(0);
+        let now = env.ledger().timestamp();
+        if now < last_vouch_time + vouch_cooldown_secs {
+            return Err(ContractError::VouchCooldownActive);
+        }
+    }
 
     let mut vouches: Vec<VouchRecord> = env
         .storage()
