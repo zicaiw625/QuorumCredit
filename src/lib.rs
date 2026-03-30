@@ -62,6 +62,8 @@ mod vouch_cooldown_test;
 mod repay_protocol_fee_test;
 #[cfg(test)]
 mod is_eligible_token_filter_test;
+#[cfg(test)]
+mod vote_slash_auto_execute_test;
 
 pub use errors::ContractError;
 pub use types::*;
